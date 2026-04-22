@@ -85,6 +85,15 @@
   .ex-name { font-size:14px; font-weight:500; }
   .exercise.done .ex-name { color:var(--text-dim); text-decoration:line-through; text-decoration-color:var(--text-muted); }
   .ex-detail { font-family:'Space Mono',monospace; font-size:11px; color:var(--text-muted); margin-top:2px; }
+  .set-boxes { display:flex; gap:8px; flex-shrink:0; }
+  .set-box { width:26px; height:26px; border-radius:7px; border:2px solid var(--border); display:flex; align-items:center; justify-content:center; flex-shrink:0; transition:all 0.25s; font-size:14px; cursor:pointer; user-select:none; background:var(--surface); }
+  .set-box:active { transform:scale(0.92); }
+  .set-box.checked { background:var(--green); border-color:var(--green); color:#000; box-shadow:0 0 10px var(--green-glow); }
+  .ex-check { cursor:pointer; }
+  .ex-check.checked { background:var(--green); border-color:var(--green); color:#000; box-shadow:0 0 10px var(--green-glow); }
+  .exercise { justify-content:space-between; }
+  .exercise.done .set-box, .exercise.done .ex-check { opacity:0.85; }
+  .exercise.done .ex-name { color:var(--text-dim); text-decoration:line-through; text-decoration-color:var(--text-muted); }
 
   .complete-btn-wrap { text-align:center; margin:24px 0; }
   .complete-btn { display:inline-flex; align-items:center; gap:8px; padding:14px 32px; font-family:'Outfit',sans-serif; font-size:15px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#000; background:linear-gradient(135deg,var(--accent),#e8c0ff); border:none; border-radius:50px; cursor:pointer; transition:all 0.3s; box-shadow:0 4px 20px rgba(212,160,255,0.3); }
@@ -317,25 +326,25 @@ var SIBLING_ID = 'eddie';
 var EXERCISES = [
   { category:'Warm Up', color:'var(--cat-warmup)', items:[
     {name:'Hip Openers',detail:'10 each direction'},{name:'Ankle Rocks',detail:'15 reps each side'},
-    {name:'Side Lunge',detail:'3 × 6'},{name:'Leg Split',detail:'× 5'}
+    {name:'Side Lunge',detail:'3 × 6',sets:3},{name:'Leg Split',detail:'× 5'}
   ]},
   { category:'Speed', color:'var(--cat-speed)', items:[
-    {name:'Jump Rope',detail:'× 1000'},{name:'Wall Acceleration Holds with High Knee',detail:'3 × 20'}
+    {name:'Jump Rope',detail:'× 1000'},{name:'Wall Acceleration Holds with High Knee',detail:'3 × 20',sets:3}
   ]},
   { category:'Lower Body Power', color:'var(--cat-lower)', items:[
-    {name:'Squat',detail:'3 × 10'},{name:'Bulgarian Split Lunge',detail:'3 × 10'},
-    {name:'Lateral Line Hops',detail:'2 × 20'},{name:'Turning Exercise',detail:'× 10'}
+    {name:'Squat',detail:'3 × 10',sets:3},{name:'Bulgarian Split Lunge',detail:'3 × 10',sets:3},
+    {name:'Lateral Line Hops',detail:'2 × 20',sets:2},{name:'Turning Exercise',detail:'× 10'}
   ]},
   { category:'Core Power', color:'var(--cat-core)', items:[
-    {name:'Ab Roller Wheel',detail:'3 × 8'},{name:'Sit Ups',detail:'2 × 20'},
+    {name:'Ab Roller Wheel',detail:'3 × 8',sets:3},{name:'Sit Ups',detail:'2 × 20',sets:2},
     {name:'Planks',detail:'Hold as long as possible'}
   ]},
   { category:'Upper Body Power', color:'var(--cat-upper)', items:[
-    {name:'Push Ups',detail:'2 × 10'},{name:'Hanging',detail:'Longer the better'}
+    {name:'Push Ups',detail:'2 × 10',sets:2},{name:'Hanging',detail:'Longer the better'}
   ]}
 ];
 
-var TOTAL_EX = EXERCISES.reduce(function(s,c){return s+c.items.length;},0);
+var TOTAL_EX = EXERCISES.reduce(function(s,c){return s+c.items.reduce(function(a,x){return a+(x.sets||1);},0);},0);
 var BADGES = [
   {emoji:'⭐',name:'First Day',req:1,desc:'1 workout'},{emoji:'🔥',name:'On Fire',req:7,desc:'7 workouts'},
   {emoji:'💪',name:'Beast Mode',req:14,desc:'14 workouts'},{emoji:'🥉',name:'Bronze',req:30,desc:'30 workouts'},
@@ -351,7 +360,7 @@ var viewYear = new Date().getFullYear();
 var _saving = false;
 
 function todayKey(){var d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
-function catStart(ci){var s=0;for(var i=0;i<ci;i++)s+=EXERCISES[i].items.length;return s;}
+function catStart(ci){var s=0;for(var i=0;i<ci;i++){EXERCISES[i].items.forEach(function(x){s+=(x.sets||1);});}return s;}
 
 // ─── Firebase sync ───
 function setSyncStatus(state) {
@@ -452,18 +461,59 @@ function calcStreakFor(d) {
 // ─── Rendering ───
 function renderExercises() {
   var container = document.getElementById('exerciseList');
-  var today = data.days[todayKey()] || {};
+  // Guard: drop any stale set-indices from today that don't fit new set layout
+  var _tk = todayKey();
+  if (data.days && data.days[_tk] && data.days[_tk].checked) {
+    var _before = data.days[_tk].checked.length;
+    data.days[_tk].checked = data.days[_tk].checked.filter(function(x){ return x >= 0 && x < TOTAL_EX; });
+    if (data.days[_tk].checked.length !== _before) { try { saveData(); } catch(e){} }
+  }
+  var today = data.days[_tk] || {};
   var checked = today.checked || [];
   var html = '';
   EXERCISES.forEach(function(cat, ci) {
-    var cc = cat.items.filter(function(_, i) { return checked.indexOf(catStart(ci) + i) > -1; }).length;
+    // Count completed items in this category (item = all its sets checked)
+    var completedItems = 0;
+    var catBase = catStart(ci);
+    var runningOffset = 0;
+    cat.items.forEach(function(ex) {
+      var sets = ex.sets || 1, allDone = true;
+      for (var s = 0; s < sets; s++) {
+        if (checked.indexOf(catBase + runningOffset + s) === -1) { allDone = false; break; }
+      }
+      if (allDone) completedItems++;
+      runningOffset += sets;
+    });
     html += '<div class="category"><div class="cat-header" onclick="window._toggleCat(this)" style="background:'+cat.color+'11;border:1px solid '+cat.color+'33;border-bottom:none;">' +
       '<div class="cat-dot" style="background:'+cat.color+'"></div><h2 style="color:'+cat.color+'">'+cat.category+'</h2>' +
-      '<span class="cat-count">'+cc+'/'+cat.items.length+'</span><span class="cat-chevron">▼</span></div><div class="cat-body">';
-    cat.items.forEach(function(ex, ei) {
-      var idx = catStart(ci) + ei, done = checked.indexOf(idx) > -1;
-      html += '<div class="exercise '+(done?'done':'')+'" onclick="window._toggleEx('+idx+')"><div class="ex-check">'+(done?'✓':'')+'</div>' +
-        '<div class="ex-info"><div class="ex-name">'+ex.name+'</div><div class="ex-detail">'+ex.detail+'</div></div></div>';
+      '<span class="cat-count">'+completedItems+'/'+cat.items.length+'</span><span class="cat-chevron">▼</span></div><div class="cat-body">';
+    runningOffset = 0;
+    cat.items.forEach(function(ex) {
+      var sets = ex.sets || 1;
+      var firstIdx = catBase + runningOffset;
+      // Row is "done" only when every set is checked
+      var allDone = true;
+      for (var s = 0; s < sets; s++) {
+        if (checked.indexOf(firstIdx + s) === -1) { allDone = false; break; }
+      }
+      var boxesHtml = '';
+      if (sets === 1) {
+        var done = checked.indexOf(firstIdx) > -1;
+        boxesHtml = '<div class="ex-check '+(done?'checked':'')+'" onclick="event.stopPropagation();window._toggleSet('+firstIdx+')">'+(done?'✓':'')+'</div>';
+      } else {
+        boxesHtml = '<div class="set-boxes">';
+        for (var s = 0; s < sets; s++) {
+          var sIdx = firstIdx + s;
+          var sDone = checked.indexOf(sIdx) > -1;
+          boxesHtml += '<div class="set-box '+(sDone?'checked':'')+'" onclick="event.stopPropagation();window._toggleSet('+sIdx+')" title="Set '+(s+1)+'">'+(sDone?'✓':'')+'</div>';
+        }
+        boxesHtml += '</div>';
+      }
+      html += '<div class="exercise '+(allDone?'done':'')+'">' +
+        '<div class="ex-info"><div class="ex-name">'+ex.name+'</div><div class="ex-detail">'+ex.detail+'</div></div>' +
+        boxesHtml +
+        '</div>';
+      runningOffset += sets;
     });
     html += '</div></div>';
   });
@@ -495,7 +545,7 @@ window._toggleCat = function(el) {
   else { body.style.maxHeight=body.scrollHeight+'px'; body.style.overflow=''; setTimeout(function(){body.style.maxHeight='none';},350); }
 };
 
-window._toggleEx = function(idx) {
+window._toggleSet = function(idx) {
   var key = todayKey();
   if (!data.days[key]) data.days[key] = {checked:[],journal:{}};
   var arr = data.days[key].checked;
@@ -504,6 +554,7 @@ window._toggleEx = function(idx) {
   saveData();
   renderExercises();
 };
+window._toggleEx = window._toggleSet;
 
 window.completeWorkout = function() {
   var key = todayKey();
@@ -585,7 +636,7 @@ window._showDay = function(key,day){
   document.getElementById('dayDetailTitle').textContent=mn[viewMonth]+' '+day+', '+viewYear;
   if(!dd||((!dd.checked||!dd.checked.length)&&!dd.completed)){document.getElementById('dayDetailStatus').innerHTML='No workout recorded';document.getElementById('dayDetailJournal').innerHTML='';}
   else{var cnt=(dd.checked||[]).length;
-    document.getElementById('dayDetailStatus').innerHTML=dd.completed?'<span style="color:var(--green)">✓ Completed</span> — '+cnt+'/'+TOTAL_EX+' exercises':'<span style="color:var(--gold)">◐ Partial</span> — '+cnt+'/'+TOTAL_EX+' exercises';
+    document.getElementById('dayDetailStatus').innerHTML=dd.completed?'<span style="color:var(--green)">✓ Completed</span> — '+cnt+'/'+TOTAL_EX+' sets':'<span style="color:var(--gold)">◐ Partial</span> — '+cnt+'/'+TOTAL_EX+' sets';
     var jH='';if(dd.journal){[['Positive mindset',dd.journal.q1],['Truly appreciated',dd.journal.q2],['Improved today',dd.journal.q3],['Pay more attention at',dd.journal.q4]].forEach(function(q){if(q[1])jH+='<h4>'+q[0]+'</h4><p>'+q[1]+'</p>';});}
     document.getElementById('dayDetailJournal').innerHTML=jH||'<p style="color:var(--text-muted)">No journal entry</p>';
   }
